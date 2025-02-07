@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Color Challenge - Find the Different One</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jquery/3.6.0/jquery.min.js"></script>
+    <style>
+        *, :after, :before {
+            box-sizing: border-box;
+            margin: 0;
+            -webkit-touch-callout: none;
+            -webkit-tap-highlight-color: transparent;
+        }
+
+        html, body {
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+            -webkit-user-select: none;
+            -ms-user-select: none;
+            user-select: none;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: Arial, sans-serif;
+            transition: background-color 0.3s ease;
+        }
+
+        body.light-mode {
+            background-color: #fff;
+            background-image: linear-gradient(45deg, #efefef 25%, rgba(239,239,239,0) 25%, rgba(239,239,239,0) 75%, #efefef 75%, #efefef),
+                            linear-gradient(45deg, #efefef 25%, rgba(239,239,239,0) 25%, rgba(239,239,239,0) 75%, #efefef 75%, #efefef);
+            background-position: 0 0, 10px 10px;
+            background-size: 21px 21px;
+        }
+
+        body.dark-mode {
+            background-color: #1a1a1a;
+            background-image: linear-gradient(45deg, #222 25%, rgba(34,34,34,0) 25%, rgba(34,34,34,0) 75%, #222 75%, #222),
+                            linear-gradient(45deg, #222 25%, rgba(34,34,34,0) 25%, rgba(34,34,34,0) 75%, #222 75%, #222);
+            background-position: 0 0, 10px 10px;
+            background-size: 21px 21px;
+            color: #fff;
+        }
+
+        #squares-container {
+            display: grid;
+            justify-content: center;
+            align-items: center;
+            max-width: 100dvw;
+            max-height: 100dvh;
+            padding: 5dvh 5dvw;
+            gap: 4px;
+        }
+
+        #squares-container > div {
+            margin: 0 auto;
+            -webkit-tap-highlight-color: transparent;
+            transition: all 0.2s ease;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+
+        #squares-container > div:not(.inactive):hover {
+            transform: scale(1.05);
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+        }
+
+        #squares-container > div:not(.inactive) {
+            cursor: pointer;
+        }
+
+        .dark-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background-color: rgba(0,0,0,0.4);
+            z-index: 999;
+            backdrop-filter: blur(3px);
+        }
+
+        #play-button {
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 1000;
+            cursor: pointer;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            padding: 20px 40px;
+            border-radius: 8px;
+            font-size: 1.5em;
+            box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+            transition: all 0.2s ease;
+        }
+
+        #play-button:hover {
+            transform: translate(-50%, -52%);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.3);
+            background: #45a049;
+        }
+
+        #theme-toggle, #hint-toggle {
+            position: fixed;
+            top: 20px;
+            z-index: 1000;
+            cursor: pointer;
+            background: transparent;
+            border: none;
+            padding: 10px;
+            border-radius: 50%;
+            transition: all 0.2s ease;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+        }
+
+        #theme-toggle {
+            right: 20px;
+        }
+
+        #hint-toggle {
+            right: 70px;
+        }
+
+        #theme-toggle:hover, #hint-toggle:hover {
+            background: rgba(0,0,0,0.1);
+        }
+
+        .dark-mode #theme-toggle:hover, .dark-mode #hint-toggle:hover {
+            background: rgba(255,255,255,0.1);
+        }
+
+        #theme-toggle svg, #hint-toggle svg {
+            width: 24px;
+            height: 24px;
+            transition: all 0.3s ease;
+            stroke: #333;
+        }
+
+        .dark-mode #theme-toggle svg, .dark-mode #hint-toggle svg {
+            stroke: #fff;
+        }
+
+        .tooltip {
+            position: absolute;
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 4px;
+            font-size: 14px;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+            max-width: 200px;
+            z-index: 1000;
+            white-space: pre-line;
+            text-align: left;
+            transform: translateX(-50%);
+        }
+
+        .dark-mode .tooltip {
+            background: rgba(255, 255, 255, 0.9);
+            color: black;
+        }
+
+        #hint-toggle.active {
+            background: rgba(76, 175, 80, 0.2);
+        }
+
+        .dark-mode #hint-toggle.active {
+            background: rgba(76, 175, 80, 0.4);
+        }
+
+        #theme-toggle .sun-icon {
+            display: none;
+        }
+
+        #theme-toggle .moon-icon {
+            display: block;
+        }
+
+        .dark-mode #theme-toggle .sun-icon {
+            display: block;
+        }
+
+        .dark-mode #theme-toggle .moon-icon {
+            display: none;
+        }
+
+        #game-info {
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            z-index: 1000;
+            background: rgba(255, 255, 255, 0.9);
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            transition: all 0.3s ease;
+            min-width: 200px;
+        }
+
+        .dark-mode #game-info {
+            background: rgba(0, 0, 0, 0.7);
+        }
+
+        .game-started .dark-overlay,
+        .game-started #play-button {
+            display: none;
+        }
+
+        #level-display { 
+            font-size: 1.4em; 
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+
+        #difficulty-display { 
+            font-size: 1.1em; 
+            margin-bottom: 5px;
+        }
+
+        #score-display { 
+            font-size: 1.1em;
+            margin-bottom: 5px;
+        }
+
+        #timer-display {
+            font-size: 1.2em;
+            font-family: monospace;
+            color: #666;
+        }
+
+        .dark-mode #timer-display {
+            color: #aaa;
+        }
+
+        .tutorial { color: #2196F3; }
+        .easy { color: #4CAF50; }
+        .medium { color: #FFC107; }
+        .hard { color: #FF5722; }
+        .expert { color: #9C27B0; }
+        .master { color: #F44336; }
+
+        #win-message {
+            display: none;
+            position: fixed;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: white;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            z-index: 1001;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+
+        .dark-mode #win-message {
+            background: #333;
+            color: #fff;
+        }
+
+        .game-completed #squares-container {
+            opacity: 0.5;
+            filter: blur(2px);
+        }
+
+        .game-completed #win-message {
+            display: block;
+            animation: popup 0.5s ease;
+        }
+
+        @keyframes popup {
+            0% {
+                transform: translate(-50%, -50%) scale(0.8);
+                opacity: 0;
+            }
+            100% {
+                transform: translate(-50%, -50%) scale(1);
+                opacity: 1;
+            }
+        }
+
+        #win-message h2 {
+            margin-bottom: 20px;
+            color: #4CAF50;
+        }
+
+        .dark-mode #win-message h2 {
+            color: #81c784;
+        }
+
+        #win-message button {
+            margin-top: 20px;
+            padding: 10px 20px;
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 1.1em;
+            transition: all 0.2s ease;
+        }
+
+        #win-message button:hover {
+            background: #45a049;
+            transform: translateY(-2px);
+        }
+
+        .stats-row {
+            margin: 10px 0;
+            font-size: 1.1em;
+        }
+
+        .stats-label {
+            font-weight: bold;
+            color: #666;
+        }
+
+        .dark-mode .stats-label {
+            color: #aaa;
+        }
+
+        #game-over {
+            color: #f44336;
+        }
+
+        @media (max-width: 768px) {
+            #game-info {
+                top: auto;
+                bottom: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                width: 90%;
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                flex-wrap: wrap;
+                padding: 10px;
+                background: rgba(255, 255, 255, 0.95);
+            }
+
+            .dark-mode #game-info {
+                background: rgba(0, 0, 0, 0.85);
+            }
+
+            #level-display, #difficulty-display, #score-display, #timer-display {
+                margin: 2px 5px;
+                font-size: 0.9em;
+            }
+
+            #play-button {
+                padding: 15px 30px;
+                font-size: 1.2em;
+            }
+
+            #theme-toggle {
+                top: 10px;
+                right: 10px;
+            }
+
+            #squares-container {
+                padding: 2dvh 2dvw;
+                gap: 2px;
+            }
+
+            #squares-container > div {
+                border-radius: 4px;
+            }
+
+            #win-message {
+                width: 90%;
+                max-width: 350px;
+                padding: 20px;
+            }
+
+            #win-message h2 {
+                font-size: 1.5em;
+            }
+
+            .stats-row {
+                font-size: 1em;
+            }
+        }
+
+        @media (max-height: 600px) {
+            #game-info {
+                padding: 5px;
+            }
+
+            #squares-container {
+                padding: 1dvh 1dvw;
+            }
+        }
+
+        @media (hover: none) {
+            #squares-container > div:not(.inactive):active {
+                transform: scale(0.95);
+            }
+        }
+    </style>
+</head>
+<body class="light-mode">
+    <div class="dark-overlay"></div>
+    <button id="play-button">Start Game</button>
+    <button id="theme-toggle" aria-label="Toggle theme">
+        <svg class="sun-icon" viewBox="0 0 24 24" fill="none" stroke-width="2">
+            <circle cx="12" cy="12" r="5"></circle>
+            <path d="M12 1v2m0 18v2M4.22 4.22l1.42 1.42m12.72 12.72l1.42 1.42M1 12h2m18 0h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"></path>
+        </svg>
+        <svg class="moon-icon" viewBox="0 0 24 24" fill="none" stroke-width="2">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+        </svg>
+    </button>
+    <button id="hint-toggle" aria-label="Toggle hints">
+        <svg viewBox="0 0 24 24" fill="none" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/>
+            <path d="M12 16v-4"/>
+            <path d="M12 8h.01"/>
+        </svg>
+    </button>
+    
+    <div id="game-info">
+        <div id="level-display">Level: 1</div>
+        <div id="difficulty-display">Difficulty: <span class="tutorial">Tutorial</span></div>
+        <div id="score-display">Score: 0</div>
+        <div id="timer-display">Time: 00:00</div>
+    </div>
+    
+    <div id="squares-container"></div>
+    
+    <div id="win-message">
+        <h2>Game Over!</h2>
+        <div class="stats-row">
+            <span class="stats-label">Time played:</span>
+            <span class="total-time"></span>
+        </div>
+        <div class="stats-row">
+            <span class="stats-label">Levels completed:</span>
+            <span class="levels-completed"></span>
+        </div>
+        <div class="stats-row">
+            <span class="stats-label">Final Score:</span>
+            <span class="final-score"></span>
+        </div>
+        <button onclick="location.reload()">Try Again</button>
+    </div>
+
+    <script>
+        $(function(){
+            const squaresContainer = $("#squares-container");
+            let currentLevel = 0;
+            let score = 0;
+            let startTime = null;
+            let timerInterval = null;
+            let levelStartTime = null;
+            let levelTimes = [];
+            let hintsEnabled = false;
+            const tooltip = $('<div class="tooltip"></div>').appendTo('body');
+
+            function showTooltip(element, text) {
+                const rect = element[0].getBoundingClientRect();
+                tooltip.text(text).css({
+                    top: rect.top + rect.height + 5 + 'px',
+                    left: rect.left + (rect.width / 2) - (tooltip.width() / 2) + 'px',
+                    opacity: 1
+                });
+            }
+
+            function hideTooltip() {
+                tooltip.css('opacity', 0);
+            }
+
+            function rgbToHsl(r, g, b) {
+                r /= 255;
+                g /= 255;
+                b /= 255;
+
+                const max = Math.max(r, g, b);
+                const min = Math.min(r, g, b);
+                let h, s, l = (max + min) / 2;
+
+                if (max === min) {
+                    h = s = 0;
+                } else {
+                    const d = max - min;
+                    s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+
+                    switch (max) {
+                        case r: h = (g - b) / d + (g < b ? 6 : 0); break;
+                        case g: h = (b - r) / d + 2; break;
+                        case b: h = (r - g) / d + 4; break;
+                    }
+
+                    h /= 6;
+                }
+
+                return {
+                    hue: Math.round(h * 360),
+                    saturation: Math.round(s * 100),
+                    lightness: Math.round(l * 100)
+                };
+            }
+
+            function getColorInfo(color) {
+                // Handle RGB color format
+                const rgbMatch = color.match(/rgb\((\d+),\s*(\d+),\s*(\d+)\)/);
+                if (rgbMatch) {
+                    return rgbToHsl(
+                        parseInt(rgbMatch[1]),
+                        parseInt(rgbMatch[2]),
+                        parseInt(rgbMatch[3])
+                    );
+                }
+                // Handle HSL color format
+                const hslMatch = color.match(/hsl\((\d+),\s*(\d+)%,\s*(\d+)%\)/);
+                if (hslMatch) {
+                    return {
+                        hue: parseInt(hslMatch[1]),
+                        saturation: parseInt(hslMatch[2]),
+                        lightness: parseInt(hslMatch[3])
+                    };
+                }
+                return null;
+            }
+
+            function setupHints(enabled) {
+                $('#squares-container > div').off('mouseenter mouseleave touchstart touchend');
+                
+                if (enabled) {
+                    $('#squares-container > div').on('mouseenter touchstart', function(e) {
+                        if (e.type === 'touchstart') {
+                            e.preventDefault();
+                        }
+                        const color = $(this).css('backgroundColor');
+                        const info = getColorInfo(color);
+                        if (info) {
+                            const text = `Hue: ${info.hue}°\nSaturation: ${info.saturation}%\nLightness: ${info.lightness}%`;
+                            showTooltip($(this), text);
+                        }
+                    }).on('mouseleave touchend', function() {
+                        hideTooltip();
+                    });
+                }
+            }
+
+            function formatTime(ms) {
+                const minutes = Math.floor(ms / 60000);
+                const seconds = Math.floor((ms % 60000) / 1000);
+                return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+            }
+
+            function updateTimer() {
+                if (!startTime) return;
+                const currentTime = Date.now();
+                const elapsedTime = currentTime - startTime;
+                $("#timer-display").text(`Time: ${formatTime(elapsedTime)}`);
+            }
+
+            function bindHintEvents() {
+                $("#hint-toggle").on("click", function(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    hintsEnabled = !hintsEnabled;
+                    $(this).toggleClass('active', hintsEnabled);
+                    console.log('Hint toggled:', hintsEnabled); // Debug
+                    if (hintsEnabled) {
+                        setupHints(true);
+                    } else {
+                        $('#squares-container > div').off('mouseenter mouseleave touchstart touchend');
+                        hideTooltip();
+                    }
+                });
+            }
+
+            // Bind hint toggle event immediately
+            bindHintEvents();
+
+            function generateLevels() {
+                const levels = [];
+                for(let i = 0; i < 100; i++) {
+                    let gridSize, hueDiff, satDiff, lightDiff;
+                    
+                    if (i < 10) {  // Tutorial levels
+                        gridSize = [2, 2];
+                        hueDiff = 40 - i * 1.5;    // Start at 40° difference, decrease by 1.5° each level
+                        satDiff = 0;
+                        lightDiff = 0;
+                    } else if (i < 25) {  // Easy levels
+                        gridSize = [2 + Math.floor((i-10)/5), 2 + Math.floor((i-10)/5)];
+                        hueDiff = 25 - (i-10)/2;   // Start at 25° difference, gradually decrease
+                        satDiff = 0;
+                        lightDiff = 0;
+                    } else if (i < 50) {  // Medium levels
+                        gridSize = [3 + Math.floor((i-25)/8), 3 + Math.floor((i-25)/8)];
+                        hueDiff = 18 - (i-25)/3;   // Start at 18° difference
+                        satDiff = Math.floor((i-25)/5);
+                        lightDiff = 0;
+                    } else if (i < 75) {  // Hard levels
+                        gridSize = [5 + Math.floor((i-50)/10), 5 + Math.floor((i-50)/10)];
+                        hueDiff = 10 - (i-50)/5;   // Start at 10° difference
+                        satDiff = Math.floor((i-50)/8);
+                        lightDiff = Math.floor((i-50)/10);
+                    } else {  // Master levels
+                        gridSize = [8 + Math.floor((i-75)/10), 8 + Math.floor((i-75)/10)];
+                        hueDiff = 6 - (i-75)/12;   // Start at 6° difference
+                        satDiff = Math.floor((i-75)/5);
+                        lightDiff = Math.floor((i-75)/8);
+                    }
+                    
+                    levels.push([
+                        Math.min(gridSize[0], 10),
+                        Math.min(gridSize[1], 10),
+                        Math.max(hueDiff, 1),
+                        Math.max(hueDiff * 0.8, 0.5),
+                        Math.min(satDiff, 10),
+                        Math.min(lightDiff, 8)
+                    ]);
+                }
+                return levels;
+            }
+            
+            const levels = generateLevels();
+
+            function updateGameInfo() {
+                $("#level-display").text(`Level: ${currentLevel + 1}`);
+                $("#score-display").text(`Score: ${score}`);
+                
+                let difficulty, difficultyClass;
+                if (currentLevel < 10) {
+                    difficulty = "Tutorial"; difficultyClass = "tutorial";
+                } else if (currentLevel < 25) {
+                    difficulty = "Easy"; difficultyClass = "easy";
+                } else if (currentLevel < 50) {
+                    difficulty = "Medium"; difficultyClass = "medium";
+                } else if (currentLevel < 75) {
+                    difficulty = "Hard"; difficultyClass = "hard";
+                } else {
+                    difficulty = "Master"; difficultyClass = "master";
+                }
+                
+                $("#difficulty-display").html(`Difficulty: <span class="${difficultyClass}">${difficulty}</span>`);
+            }
+
+            function initializeGame() {
+                updateGameInfo();
+                
+                const containerWidth = $(window).width() * 0.9;
+                const containerHeight = $(window).height() * 0.9;
+                
+                let columnCount, rowCount;
+                if (containerHeight > containerWidth) {
+                    rowCount = Math.max(levels[currentLevel][0], levels[currentLevel][1]);
+                    columnCount = Math.min(levels[currentLevel][0], levels[currentLevel][1]);
+                } else {
+                    rowCount = Math.min(levels[currentLevel][0], levels[currentLevel][1]);
+                    columnCount = Math.max(levels[currentLevel][0], levels[currentLevel][1]);
+                }
+                
+                const squareSize = Math.floor(Math.min(containerWidth/columnCount, containerHeight/rowCount));
+                
+                squaresContainer.css({
+                    gridTemplateColumns: `repeat(${columnCount}, ${squareSize}px)`
+                });
+
+                function createSquare(color) {
+                    const square = $("<div></div>");
+                    const borderSize = Math.ceil(squareSize/20);
+                    const innerSize = squareSize - borderSize * 2;
+                    
+                    square.css({
+                        width: innerSize + "px",
+                        height: innerSize + "px",
+                        margin: borderSize + "px",
+                        backgroundColor: color
+                    });
+                    
+                    return square;
+                }
+
+                const baseHue = Math.floor(Math.random() * 360);
+                const baseSaturation = 70 + Math.floor(Math.random() * 20);
+                const baseLightness = 50 + Math.floor(Math.random() * 20);
+                
+                const [, , maxHueDiff, minHueDiff, saturationDiff, lightnessDiff] = levels[currentLevel];
+                
+                const hueDiff = maxHueDiff - ((maxHueDiff - minHueDiff) * (currentLevel/levels.length));
+                const newHue = (baseHue + hueDiff) % 360;
+                const newSaturation = baseSaturation + (Math.random() < 0.5 ? -saturationDiff : saturationDiff);
+                const newLightness = baseLightness + (Math.random() < 0.5 ? -lightnessDiff : lightnessDiff);
+                
+                const baseColor = `hsl(${baseHue}, ${baseSaturation}%, ${baseLightness}%)`;
+                const targetColor = `hsl(${newHue}, ${newSaturation}%, ${newLightness}%)`;
+
+                const squares = [];
+                const totalSquares = levels[currentLevel][0] * levels[currentLevel][1];
+                const targetSquareIndex = Math.floor(totalSquares * Math.random());
+
+                for (let i = 0; i < totalSquares; i++) {
+                    let square;
+                    if (i === targetSquareIndex) {
+                        square = createSquare(targetColor).on("touchstart click", function(e) {
+                            e.preventDefault();
+                            if (e.type === "touchstart" && e.originalEvent.touches.length > 1) return;
+                            
+                            score += 1;
+                            updateGameInfo();
+                            
+                            if (currentLevel === levels.length - 1) {
+                                const endTime = Date.now();
+                                const totalTime = endTime - startTime;
+                                clearInterval(timerInterval);
+                                
+                                squaresContainer.find("div").off().addClass("inactive");
+                                $("body").addClass("game-completed");
+                                
+                                $("#win-message").html(`
+                                    <h2>🏆 Victory! 🏆</h2>
+                                    <div class="stats-row">
+                                        <span class="stats-label">Total Time:</span>
+                                        <span>${formatTime(totalTime)}</span>
+                                    </div>
+                                    <div class="stats-row">
+                                        <span class="stats-label">Final Score:</span>
+                                        <span>${score}</span>
+                                    </div>
+                                    <button onclick="location.reload()">Play Again</button>
+                                `);
+                            } else {
+                                currentLevel++;
+                                squaresContainer.empty();
+                                levelStartTime = Date.now();
+                                initializeGame();
+                            }
+                        });
+                    } else {
+                        square = createSquare(baseColor).on("touchstart click", function(e) {
+                            e.preventDefault();
+                            if (e.type === "touchstart" && e.originalEvent.touches.length > 1) return;
+                            
+                            score -= 1;
+                            
+                            if (score < 0) {
+                                clearInterval(timerInterval);
+                                const totalTime = Date.now() - startTime;
+                                
+                                squaresContainer.find("div").off().addClass("inactive");
+                                $("body").addClass("game-completed");
+                                
+                                $("#win-message").html(`
+                                    <h2 id="game-over">Game Over!</h2>
+                                    <div class="stats-row">
+                                        <span class="stats-label">Time played:</span>
+                                        <span>${formatTime(totalTime)}</span>
+                                    </div>
+                                    <div class="stats-row">
+                                        <span class="stats-label">Levels completed:</span>
+                                        <span>${currentLevel}</span>
+                                    </div>
+                                    <div class="stats-row">
+                                        <span class="stats-label">Final Score:</span>
+                                        <span>${score}</span>
+                                    </div>
+                                    <button onclick="location.reload()">Try Again</button>
+                                `);
+                                return;
+                            }
+                            
+                            updateGameInfo();
+                            $(this).css('transform', 'scale(0.95)');
+                            setTimeout(() => {
+                                $(this).css('transform', 'scale(1)');
+                            }, 100);
+                        });
+                    }
+                    squares.push(square);
+                }
+                
+                squaresContainer.append(squares);
+                if (hintsEnabled) {
+                    setupHints(true);
+                }
+                if (hintsEnabled) {
+                    setupHints(true);
+                }
+            }
+
+            initializeGame();
+
+            // Start game button
+            $("#play-button").on("touchstart click", function(e) {
+                e.preventDefault();
+                if (e.type === "touchstart" && e.originalEvent.touches.length > 1) return;
+                
+                $("body").addClass("game-started");
+                $(this).fadeOut(300);
+                $(".dark-overlay").fadeOut(300);
+                
+                startTime = Date.now();
+                levelStartTime = startTime;
+                timerInterval = setInterval(updateTimer, 1000);
+            });
+
+            // Theme toggle
+            $("#theme-toggle").on("touchstart click", function(e) {
+                e.preventDefault();
+                if (e.type === "touchstart" && e.originalEvent.touches.length > 1) return;
+                
+                $("body").toggleClass("light-mode dark-mode");
+            });
+
+            // Handle window resize
+            let resizeTimeout;
+            $(window).on('resize', function() {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(function() {
+                    squaresContainer.empty();
+                    initializeGame();
+                }, 250);
+            });
+
+            // Keyboard shortcuts
+            $(document).on('keydown', function(e) {
+                if (e.key === 'r' || e.key === 'R') {
+                    location.reload();
+                } else if (e.key === 't' || e.key === 'T') {
+                    $("#theme-toggle").click();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
