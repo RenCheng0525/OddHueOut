@@ -1,0 +1,813 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+    <style>
+        body {
+            margin: 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            background: #000;
+        }
+
+        .canvas-container {
+            position: relative;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-bottom: 80px;
+            /* 為底部控制面板預留空間 */
+        }
+
+        #canvas,
+        #overlay {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            pointer-events: auto;
+            /* 允許觸控點擊 */
+            touch-action: none;
+            /* 防止預設手勢（滾動/縮放） */
+        }
+
+        .controls {
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+            background: white;
+            padding: 20px;
+            box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.1);
+            display: flex;
+            justify-content: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+
+        .active {
+            background: #2563eb;
+            color: white;
+        }
+
+        .inactive {
+            background: #e5e7eb;
+            color: #374151;
+        }
+
+        #imageInput {
+            display: none;
+        }
+    </style>
+</head>
+
+<body>
+    <div class="canvas-container">
+        <canvas id="canvas"></canvas>
+        <canvas id="overlay"></canvas>
+    </div>
+    <div class="controls">
+        <button id="drawMode" class="active">繪製模式</button>
+        <button id="shakeMode" class="inactive">搖晃模式</button>
+        <button id="clear" style="background: #ef4444; color: white;">清除全部</button>
+        <button id="loadImage" style="background: #10b981; color: white;">載入圖片</button>
+        <input type="file" id="imageInput" accept="image/*">
+    </div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/gl-matrix/2.8.1/gl-matrix-min.js"></script>
+</body>
+<script>
+    // === 基本變數初始化 ===
+    const canvas = document.getElementById('canvas');
+    const overlay = document.getElementById('overlay');
+    const gl = canvas.getContext('webgl', { preserveDrawingBuffer: true });
+    const ctx = overlay.getContext('2d');
+
+    // 繪圖狀態變數
+    let mode = 'draw';
+    let isDrawing = false;
+    let circles = [];
+    let startPos = { x: 0, y: 0 };
+    let currentPos = { x: 0, y: 0 };
+    let isDragging = false;
+
+    // 圖片相關變數
+    let currentTexture = null;
+    let backgroundImage = null;
+
+    // === 座標和大小計算函數 ===
+    function getMousePosition(e) {
+        const rect = canvas.getBoundingClientRect();
+        const scaleX = canvas.width / rect.width;
+        const scaleY = canvas.height / rect.height;
+
+        return {
+            x: (e.clientX - rect.left) * scaleX,
+            y: (e.clientY - rect.top) * scaleY
+        };
+    }
+
+    function calculateOptimalCanvasSize(image) {
+        const maxWidth = window.innerWidth * 0.9;  // 90% 的視窗寬度
+        const maxHeight = window.innerHeight * 0.8; // 80% 的視窗高度（預留控制面板空間）
+
+        let optimalWidth = image.width;
+        let optimalHeight = image.height;
+
+        // 計算縮放比例
+        if (optimalWidth > maxWidth || optimalHeight > maxHeight) {
+            const ratio = Math.min(maxWidth / optimalWidth, maxHeight / optimalHeight);
+            optimalWidth *= ratio;
+            optimalHeight *= ratio;
+        }
+
+        return {
+            width: Math.round(optimalWidth),
+            height: Math.round(optimalHeight)
+        };
+    }
+
+    // === 畫布調整和圖片載入 ===
+    function resizeCanvas() {
+        if (!backgroundImage) return;
+
+        const size = calculateOptimalCanvasSize(backgroundImage);
+        canvas.width = size.width;
+        canvas.height = size.height;
+        overlay.width = size.width;
+        overlay.height = size.height;
+
+        gl.viewport(0, 0, size.width, size.height);
+
+        if (currentTexture) {
+            gl.deleteTexture(currentTexture); // 清除舊的紋理
+        }
+        drawBackground();
+    }
+
+    function loadImage(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const image = new Image();
+                image.onload = () => {
+                    backgroundImage = image;
+                    resizeCanvas();
+                    circles = []; // 清除現有的圓形
+                    resolve();
+                };
+                image.onerror = reject;
+                image.src = event.target.result;
+            };
+            reader.onerror = reject;
+            reader.readAsDataURL(file);
+        });
+    }
+
+    // 監聽視窗大小改變
+    window.addEventListener('resize', () => {
+        resizeCanvas();
+    });
+
+    // === Shader 程式碼 ===
+    const vsSource = `
+    attribute vec4 aVertexPosition;
+    attribute vec2 aTextureCoord;
+    uniform mat4 uModelViewMatrix;
+    uniform mat4 uProjectionMatrix;
+    varying highp vec2 vTextureCoord;
+
+    void main(void) {
+        gl_Position = uProjectionMatrix * uModelViewMatrix * aVertexPosition;
+        vTextureCoord = aTextureCoord;
+    }
+`;
+
+    const fsSource = `
+precision mediump float;
+
+varying highp vec2 vTextureCoord;
+uniform sampler2D uSampler;
+
+const int MAX_CIRCLES = 10;
+uniform vec2 uCenters[MAX_CIRCLES];  // 圓的中心
+uniform float uRadii[MAX_CIRCLES];   // 圓的半徑
+uniform vec2 uForces[MAX_CIRCLES];   // 變形的方向
+uniform int uCircleCount;            // 圓的數量
+
+void main(void) {
+    // 當前像素的位置，範圍是 0 到 1
+    vec2 pos = vTextureCoord;
+    vec2 displacement = vec2(0.0);
+
+    for (int i = 0; i < MAX_CIRCLES; i++) {
+        if (i >= uCircleCount) break;
+
+        // 將當前像素位置轉換到 -1 到 1 的範圍，以匹配 uCenters 的座標系統
+        vec2 pixelPos = pos * 2.0 - 1.0;
+        
+        // 計算到圓心的向量
+        vec2 toCenter = pixelPos - uCenters[i];
+        float dist = length(toCenter);
+        
+        // 計算影響力
+        float influence = smoothstep(uRadii[i], 0.0, dist);
+        
+        // 累積變形量
+        displacement += uForces[i] * influence;
+    }
+
+    // 將變形量轉換回 0 到 1 的範圍
+    displacement *= 0.5;
+    
+    // 套用變形效果
+    vec2 distortedCoord = pos + displacement;
+    
+    // 確保紋理座標在有效範圍內
+    distortedCoord = clamp(distortedCoord, 0.0, 1.0);
+    
+    gl_FragColor = texture2D(uSampler, distortedCoord);
+}
+`;
+
+    // === WebGL 初始化函數 ===
+    function initShaderProgram(gl, vsSource, fsSource) {
+        const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
+        const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
+
+        const shaderProgram = gl.createProgram();
+        gl.attachShader(shaderProgram, vertexShader);
+        gl.attachShader(shaderProgram, fragmentShader);
+        gl.linkProgram(shaderProgram);
+
+        if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
+            console.error('無法初始化 Shader 程式：' + gl.getProgramInfoLog(shaderProgram));
+            return null;
+        }
+
+        return shaderProgram;
+    }
+
+    function loadShader(gl, type, source) {
+        const shader = gl.createShader(type);
+        gl.shaderSource(shader, source);
+        gl.compileShader(shader);
+
+        if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+            console.error('Shader 編譯錯誤：' + gl.getShaderInfoLog(shader));
+            gl.deleteShader(shader);
+            return null;
+        }
+
+        return shader;
+    }
+
+    // === 初始化 WebGL 程式和屬性位置 ===
+    const shaderProgram = initShaderProgram(gl, vsSource, fsSource);
+    const programInfo = {
+        program: shaderProgram,
+        attribLocations: {
+            vertexPosition: gl.getAttribLocation(shaderProgram, 'aVertexPosition'),
+            textureCoord: gl.getAttribLocation(shaderProgram, 'aTextureCoord'),
+        },
+        uniformLocations: {
+            projectionMatrix: gl.getUniformLocation(shaderProgram, 'uProjectionMatrix'),
+            modelViewMatrix: gl.getUniformLocation(shaderProgram, 'uModelViewMatrix'),
+            uSampler: gl.getUniformLocation(shaderProgram, 'uSampler'),
+            uCenters: gl.getUniformLocation(shaderProgram, 'uCenters'),
+            uRadii: gl.getUniformLocation(shaderProgram, 'uRadii'),
+            uForces: gl.getUniformLocation(shaderProgram, 'uForces'),
+            uCircleCount: gl.getUniformLocation(shaderProgram, 'uCircleCount'),
+        },
+    };
+
+    // 初始化 WebGL 狀態
+    gl.clearColor(0.0, 0.0, 0.0, 1.0);
+    gl.enable(gl.DEPTH_TEST);
+    gl.depthFunc(gl.LEQUAL);
+
+    // === 網格生成和緩衝區管理 ===
+    function createMesh(subdivisions = 30) {
+        const positions = [];
+        const textureCoords = [];
+        const indices = [];
+
+        // 生成頂點和紋理座標
+        for (let y = 0; y <= subdivisions; y++) {
+            for (let x = 0; x <= subdivisions; x++) {
+                // 計算頂點位置 (-1 到 1 的範圍)
+                const xPos = (x / subdivisions) * 2 - 1;
+                const yPos = (y / subdivisions) * 2 - 1;
+                positions.push(xPos, yPos);
+
+                // 計算紋理座標 (0 到 1 的範圍)
+                const u = x / subdivisions;
+                const v = 1.0 - (y / subdivisions); // 翻轉 V 座標
+                textureCoords.push(u, v);
+            }
+        }
+
+        // 生成三角形索引
+        for (let y = 0; y < subdivisions; y++) {
+            for (let x = 0; x < subdivisions; x++) {
+                const i = y * (subdivisions + 1) + x;
+                indices.push(
+                    i, i + 1, i + subdivisions + 1,
+                    i + 1, i + subdivisions + 2, i + subdivisions + 1
+                );
+            }
+        }
+
+        return {
+            positions: new Float32Array(positions),
+            textureCoords: new Float32Array(textureCoords),
+            indices: new Uint16Array(indices),
+        };
+    }
+
+    // === 緩衝區初始化和管理 ===
+    const buffers = {
+        position: gl.createBuffer(),
+        textureCoord: gl.createBuffer(),
+        indices: gl.createBuffer(),
+    };
+
+    function initBuffers(mesh) {
+        // 頂點位置緩衝區
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+        gl.bufferData(gl.ARRAY_BUFFER, mesh.positions, gl.STATIC_DRAW);
+
+        // 紋理座標緩衝區
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.textureCoord);
+        gl.bufferData(gl.ARRAY_BUFFER, mesh.textureCoords, gl.STATIC_DRAW);
+
+        // 索引緩衝區
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, mesh.indices, gl.STATIC_DRAW);
+    }
+
+    // === 紋理處理 ===
+    function isPowerOf2(value) {
+        return (value & (value - 1)) === 0;
+    }
+
+    function loadTexture(gl, image) {
+        const texture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+
+        // 上傳圖片到 GPU
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+
+        // 設置紋理參數
+        if (isPowerOf2(image.width) && isPowerOf2(image.height)) {
+            gl.generateMipmap(gl.TEXTURE_2D);
+        } else {
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+            gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        }
+
+        return texture;
+    }
+
+    // 初始化基本網格
+    let mesh = createMesh();
+    initBuffers(mesh);
+
+    // === 繪製和渲染相關函數 ===
+    function drawBackground() {
+        if (!backgroundImage) return;
+
+        // 清除舊的紋理
+        if (currentTexture) {
+            gl.deleteTexture(currentTexture);
+        }
+
+        // 創建新的紋理
+        currentTexture = loadTexture(gl, backgroundImage);
+
+        // 清除畫布
+        gl.clearColor(0.0, 0.0, 0.0, 1.0);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    }
+
+    function drawScene() {
+        if (!currentTexture) return;
+
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        gl.useProgram(programInfo.program);
+
+        // 設置矩陣
+        const projectionMatrix = mat4.create();
+        const modelViewMatrix = mat4.create();
+
+        gl.uniformMatrix4fv(
+            programInfo.uniformLocations.projectionMatrix,
+            false,
+            projectionMatrix
+        );
+        gl.uniformMatrix4fv(
+            programInfo.uniformLocations.modelViewMatrix,
+            false,
+            modelViewMatrix
+        );
+
+        // 綁定紋理
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, currentTexture);
+        gl.uniform1i(programInfo.uniformLocations.uSampler, 0);
+
+        // 設置圓形數據
+        let centers = [];
+        let radii = [];
+        let forces = [];
+
+        circles.forEach(circle => {
+            // X 座標保持不變
+            centers.push((circle.x / canvas.width) * 2 - 1);
+            // Y 座標需要反轉（去掉負號）
+            centers.push((circle.y / canvas.height) * 2 - 1); // 移除了負號
+            radii.push((circle.radius / Math.min(canvas.width, canvas.height)) * 2);
+            forces.push((circle.offsetX / canvas.width) * 2);
+            forces.push((circle.offsetY / canvas.height) * 2); // 移除了負號
+        });
+
+        // 補足未使用的圓形數據，確保陣列長度符合 `MAX_CIRCLES`
+        while (centers.length < 20) centers.push(0);
+        while (radii.length < 10) radii.push(0);
+        while (forces.length < 20) forces.push(0);
+
+        // 傳遞數據到 WebGL
+        gl.uniform2fv(programInfo.uniformLocations.uCenters, new Float32Array(centers));
+        gl.uniform1fv(programInfo.uniformLocations.uRadii, new Float32Array(radii));
+        gl.uniform2fv(programInfo.uniformLocations.uForces, new Float32Array(forces));
+        gl.uniform1i(programInfo.uniformLocations.uCircleCount, circles.length);
+
+        // 設置頂點屬性
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.position);
+        gl.vertexAttribPointer(
+            programInfo.attribLocations.vertexPosition,
+            2, gl.FLOAT, false, 0, 0
+        );
+        gl.enableVertexAttribArray(programInfo.attribLocations.vertexPosition);
+
+        gl.bindBuffer(gl.ARRAY_BUFFER, buffers.textureCoord);
+        gl.vertexAttribPointer(
+            programInfo.attribLocations.textureCoord,
+            2, gl.FLOAT, false, 0, 0
+        );
+        gl.enableVertexAttribArray(programInfo.attribLocations.textureCoord);
+
+        // 繪製
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, buffers.indices);
+        gl.drawElements(gl.TRIANGLES, mesh.indices.length, gl.UNSIGNED_SHORT, 0);
+    }
+
+    // === 2D Canvas 更新函數 ===
+    function updateOverlay() {
+        ctx.clearRect(0, 0, overlay.width, overlay.height);
+
+        if (mode === 'draw') {
+            // 繪製所有已存在的圓形
+            circles.forEach((circle, index) => {
+                ctx.beginPath();
+                ctx.arc(circle.x, circle.y, circle.radius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.8)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            });
+
+            // 繪製預覽圓形
+            if (isDrawing) {
+                const radius = Math.sqrt(
+                    Math.pow(currentPos.x - startPos.x, 2) +
+                    Math.pow(currentPos.y - startPos.y, 2)
+                );
+
+                ctx.beginPath();
+                ctx.arc(startPos.x, startPos.y, radius, 0, Math.PI * 2);
+                ctx.strokeStyle = 'rgba(255, 0, 0, 0.5)';
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+        }
+    }
+
+    // === 事件處理和動畫循環 ===
+    const container = document.querySelector('.canvas-container');
+
+    container.addEventListener('mousedown', (e) => {
+        if (!backgroundImage) {
+            return;
+        }
+
+        const pos = getMousePosition(e);
+
+        if (mode === 'draw') {
+            isDrawing = true;
+            startPos = pos;
+            currentPos = pos;
+        } else if (mode === 'shake') {
+            isDragging = true;
+
+            // 存儲滑鼠初始位置
+            startPos = pos;
+        }
+    });
+
+    container.addEventListener('mousemove', (e) => {
+        if (!backgroundImage) return;
+
+        const pos = getMousePosition(e);
+        currentPos = pos;
+
+        if (mode === 'draw' && isDrawing) {
+            console.log('繪製中，目前位置:', currentPos);
+            const radius = Math.sqrt(
+                Math.pow(currentPos.x - startPos.x, 2) +
+                Math.pow(currentPos.y - startPos.y, 2)
+            );
+            console.log('目前半徑:', radius);
+        } else if (mode === 'shake' && isDragging) {
+            // 計算滑鼠移動的向量（這就是搖晃的力道）
+            const mouseDx = pos.x - startPos.x;
+            const mouseDy = pos.y - startPos.y;
+
+            // 所有圓形接受相同的力道
+            circles.forEach(circle => {
+                // 直接套用移動向量，只需控制強度
+                circle.offsetX = mouseDx * 0.5;  // 0.5 是力道係數，可以調整
+                circle.offsetY = mouseDy * 0.5;
+
+                // 限制最大變形範圍
+                const maxOffset = circle.radius * 0.5;
+                circle.offsetX = Math.max(-maxOffset, Math.min(maxOffset, circle.offsetX));
+                circle.offsetY = Math.max(-maxOffset, Math.min(maxOffset, circle.offsetY));
+            });
+
+            // 更新起始位置，這樣下次移動時可以計算新的位移
+            startPos = pos;
+        }
+    });
+
+    container.addEventListener('mouseup', () => {
+        if (mode === 'draw' && isDrawing && backgroundImage) {
+            const radius = Math.sqrt(
+                Math.pow(currentPos.x - startPos.x, 2) +
+                Math.pow(currentPos.y - startPos.y, 2)
+            );
+
+            if (radius > 5) {
+                circles.push({
+                    x: startPos.x,
+                    y: startPos.y,
+                    radius: radius,
+                    offsetX: 0,
+                    offsetY: 0
+                });
+            }
+        }
+
+        isDrawing = false;
+        isDragging = false;
+    });
+
+    // 轉換觸控點為對應的滑鼠座標
+    function getTouchPosition(e) {
+        const touch = e.touches[0] || e.changedTouches[0];
+        return getMousePosition(touch);
+    }
+
+    // 監聽觸控開始 (對應 mousedown)
+    container.addEventListener('touchstart', (e) => {
+        e.preventDefault(); // 防止瀏覽器滾動
+        if (!backgroundImage) return;
+
+        const pos = getTouchPosition(e);
+
+        if (mode === 'draw') {
+            isDrawing = true;
+            startPos = pos;
+            currentPos = pos;
+        } else if (mode === 'shake') {
+            isDragging = true;
+            startPos = pos;
+        }
+    }, { passive: false });
+
+    // 監聽觸控移動 (對應 mousemove)
+    container.addEventListener('touchmove', (e) => {
+        e.preventDefault(); // 防止瀏覽器滾動
+        if (!backgroundImage) return;
+
+        const pos = getTouchPosition(e);
+        currentPos = pos;
+
+        if (mode === 'draw' && isDrawing) {
+            console.log('觸控繪製中，目前位置:', currentPos);
+        } else if (mode === 'shake' && isDragging) {
+            const dx = pos.x - startPos.x;
+            const dy = pos.y - startPos.y;
+
+            circles.forEach(circle => {
+                circle.offsetX = dx * 0.5;
+                circle.offsetY = dy * 0.5;
+            });
+
+            startPos = pos;
+        }
+    }, { passive: false });
+
+    // 監聽觸控結束 (對應 mouseup)
+    container.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        if (mode === 'draw' && isDrawing && backgroundImage) {
+            const radius = Math.sqrt(
+                Math.pow(currentPos.x - startPos.x, 2) +
+                Math.pow(currentPos.y - startPos.y, 2)
+            );
+
+            if (radius > 5) {
+                circles.push({
+                    x: startPos.x,
+                    y: startPos.y,
+                    radius: radius,
+                    offsetX: 0,
+                    offsetY: 0
+                });
+            }
+        }
+
+        isDrawing = false;
+        isDragging = false;
+    }, { passive: false });
+
+
+    // === 物理效果更新 ===
+    function updatePhysics() {
+        circles.forEach(circle => {
+            if (!circle.isDragging) {
+                // 應用彈簧效果
+                circle.offsetX *= 0.9;
+                circle.offsetY *= 0.9;
+            }
+        });
+    }
+
+    // === 動畫循環 ===
+    function animate() {
+        if (mode === 'shake') {
+            updatePhysics();
+        }
+        drawScene();
+        updateOverlay();
+        requestAnimationFrame(animate);
+    }
+
+    function createDebugPanel() {
+        const panel = document.createElement('div');
+        panel.style.cssText = `
+        position: fixed;
+        top: 10px;
+        left: 10px;
+        background: rgba(0,0,0,0.7);
+        color: white;
+        padding: 10px;
+        border-radius: 5px;
+        font-family: monospace;
+        z-index: 9999;
+    `;
+
+        const content = document.createElement('pre');
+        panel.appendChild(content);
+
+        document.body.appendChild(panel);
+
+        return {
+            update: (data) => {
+                content.textContent = Object.entries(data)
+                    .map(([key, value]) => `${key}: ${value}`)
+                    .join('\n');
+            }
+        };
+    }
+
+    // 使用方式:
+    const debugPanel = createDebugPanel();
+
+    function handleMotion(event) {
+        if (mode !== 'shake') return;
+
+        const acc = event.acceleration || event.accelerationIncludingGravity;
+        if (!acc) return;
+
+        debugPanel.update({
+            'Acceleration X': acc.x.toFixed(2),
+            'Acceleration Y': acc.y.toFixed(2),
+            'Acceleration Z': acc.z.toFixed(2),
+            'Circles Count': circles.length,
+            'Mode': mode,
+            'Max Offset': circles[0] ? circles[0].radius * 0.5 : 0
+        });
+
+        // 調整力道係數
+        const forceFactor = 30;  // 調整這個值直到移動感覺和滑鼠類似
+        const dx = acc.x * forceFactor;
+        const dy = acc.y * forceFactor;
+
+        circles.forEach(circle => {
+            circle.offsetX += dx;
+            circle.offsetY += dy;
+
+            // 使用和滑鼠拖曳一樣的最大變形範圍限制
+            const maxOffset = circle.radius * 0.5;  // 和滑鼠拖曳使用相同的計算方式
+            circle.offsetX = Math.max(-maxOffset, Math.min(maxOffset, circle.offsetX));
+            circle.offsetY = Math.max(-maxOffset, Math.min(maxOffset, circle.offsetY));
+        });
+    }
+
+    async function requestMotionPermission() {
+        if (typeof DeviceMotionEvent.requestPermission === 'function') {
+            try {
+                const permissionState = await DeviceMotionEvent.requestPermission();
+                if (permissionState === 'granted') {
+                    window.addEventListener('devicemotion', handleMotion, true);
+                } else {
+                    alert('加速感測器存取被拒絕');
+                }
+            } catch (error) {
+                alert('請在設定中啟用加速感測器權限');
+            }
+        } else {
+            // Android 直接啟用
+            window.addEventListener('devicemotion', handleMotion, true);
+        }
+    }
+
+    // === 按鈕事件處理 ===
+    document.getElementById('drawMode').addEventListener('click', () => {
+        mode = 'draw';
+        document.getElementById('drawMode').className = 'active';
+        document.getElementById('shakeMode').className = 'inactive';
+
+        // 重置所有變形
+        circles.forEach(circle => {
+            circle.offsetX = 0;
+            circle.offsetY = 0;
+        });
+    });
+
+    document.getElementById('shakeMode').addEventListener('click', () => {
+        mode = 'shake';
+        document.getElementById('shakeMode').className = 'active';
+        document.getElementById('drawMode').className = 'inactive';
+
+        // 確保每次進入搖晃模式都啟用感測器
+        requestMotionPermission();
+    });
+
+    document.getElementById('clear').addEventListener('click', () => {
+        circles = [];
+        drawScene();
+        updateOverlay();
+
+        // 停用感測器監聽 (避免不必要的效能浪費)
+        window.removeEventListener('devicemotion', handleMotion);
+    });
+
+    document.getElementById('loadImage').addEventListener('click', () => {
+        document.getElementById('imageInput').click();
+    });
+
+    document.getElementById('imageInput').addEventListener('change', async (e) => {
+        const file = e.target.files[0];
+        if (file) {
+            try {
+                circles = []; // 清除現有的圓形
+                await loadImage(file);
+                drawBackground(); // 重新繪製背景
+                console.log('圖片載入完成');
+            } catch (error) {
+                console.error('載入圖片失敗:', error);
+            }
+        }
+    });
+
+    document.addEventListener('touchmove', (e) => {
+        e.preventDefault(); // 阻止畫面滾動，確保觸控能正確繪圖
+    }, { passive: false });
+
+    // 啟動動畫循環
+    animate();
+</script>
+
+</html>
